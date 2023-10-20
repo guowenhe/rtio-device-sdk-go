@@ -21,8 +21,9 @@ package devicesession
 import (
 	"context"
 	"errors"
-	dp "rtio2/rtio/pkg/deviceproto"
 	"time"
+
+	dp "github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/deviceproto"
 
 	"github.com/rs/zerolog/log"
 )

@@ -19,7 +19,8 @@ package logsettings
 
 import (
 	"os"
-	"rtio2/rtio/pkg/config"
+
+	"github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/config"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"

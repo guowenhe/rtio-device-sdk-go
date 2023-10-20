@@ -23,11 +23,14 @@ import (
 	"errors"
 	"io"
 	"net"
-	dp "rtio2/rtio/pkg/deviceproto"
-	ru "rtio2/rtio/pkg/rtioutils"
-	"rtio2/rtio/pkg/timekv"
 	"sync/atomic"
 	"time"
+
+	ru "github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/rtioutils"
+
+	"github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/timekv"
+
+	dp "github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/deviceproto"
 
 	"github.com/rs/zerolog/log"
 )
