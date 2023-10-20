@@ -1,0 +1,7 @@
+*.log
+*.txt
+/out/
+/go.work
+
+# *.pb.go
+# *.pb.gw.go
