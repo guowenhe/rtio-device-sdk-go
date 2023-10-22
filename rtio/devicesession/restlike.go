@@ -24,8 +24,7 @@ import (
 	"time"
 
 	dp "github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/deviceproto"
-
-	"github.com/rs/zerolog/log"
+	"github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/trace"
 )
 
 var (
@@ -105,34 +104,35 @@ func (s *DeviceSession) Get(uri uint32, Req []byte, timeout time.Duration) ([]by
 	headerID := s.genHeaderID()
 	respChan, err := s.sendCoReq(headerID, dp.Method_ConstrainedGet, uri, Req)
 	if err != nil {
-		log.Error().Err(err).Msg("Get")
+		trace.Printf("Get, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
 	statusCode, data, err := s.receiveCoResp(headerID, respChan, timeout)
 	if err != nil {
 		if err == ErrSendTimeout {
-			log.Error().Err(err).Msg("Get")
+			trace.Printf("Get, uri=%d error=%v", uri, err)
 			return nil, ErrRequestTimeout
 		}
-		log.Error().Err(err).Msg("Get")
+		trace.Printf("Get, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
 	return data, transToSDKError(statusCode)
 }
-func (s *DeviceSession) Get2(ctx context.Context, uri uint32, Req []byte, timeout time.Duration) ([]byte, error) {
+
+func (s *DeviceSession) GetWithContext(ctx context.Context, uri uint32, Req []byte) ([]byte, error) {
 	headerID := s.genHeaderID()
 	respChan, err := s.sendCoReq(headerID, dp.Method_ConstrainedGet, uri, Req)
 	if err != nil {
-		log.Error().Err(err).Msg("Get")
+		trace.Printf("Get2, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
-	statusCode, data, err := s.receiveCoResp2(ctx, headerID, respChan, timeout)
+	statusCode, data, err := s.receiveCoRespWithContext(ctx, headerID, respChan)
 	if err != nil {
 		if err == ErrSendTimeout {
-			log.Error().Err(err).Msg("Get")
+			trace.Printf("Get2, uri=%d error=%v", uri, err)
 			return nil, ErrRequestTimeout
 		}
-		log.Error().Err(err).Msg("Get")
+		trace.Printf("Get2, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
 	return data, transToSDKError(statusCode)
@@ -142,35 +142,35 @@ func (s *DeviceSession) Post(uri uint32, Req []byte, timeout time.Duration) ([]b
 	headerID := s.genHeaderID()
 	respChan, err := s.sendCoReq(headerID, dp.Method_ConstrainedPost, uri, Req)
 	if err != nil {
-		log.Error().Err(err).Msg("Post")
+		trace.Printf("Post, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
 	statusCode, data, err := s.receiveCoResp(headerID, respChan, timeout)
 	if err != nil {
 		if err == ErrSendTimeout {
-			log.Error().Err(err).Msg("Post")
+			trace.Printf("Post, uri=%d error=%v", uri, err)
 			return nil, ErrRequestTimeout
 		}
-		log.Error().Err(err).Msg("Post")
+		trace.Printf("Post, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
 	return data, transToSDKError(statusCode)
 }
 
-func (s *DeviceSession) Post2(ctx context.Context, uri uint32, Req []byte, timeout time.Duration) ([]byte, error) {
+func (s *DeviceSession) PostWithContext(ctx context.Context, uri uint32, Req []byte) ([]byte, error) {
 	headerID := s.genHeaderID()
 	respChan, err := s.sendCoReq(headerID, dp.Method_ConstrainedPost, uri, Req)
 	if err != nil {
-		log.Error().Err(err).Msg("Post")
+		trace.Printf("Post2, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
-	statusCode, data, err := s.receiveCoResp2(ctx, headerID, respChan, timeout)
+	statusCode, data, err := s.receiveCoRespWithContext(ctx, headerID, respChan)
 	if err != nil {
 		if err == ErrSendTimeout {
-			log.Error().Err(err).Msg("Post")
+			trace.Printf("Post2, uri=%d error=%v", uri, err)
 			return nil, ErrRequestTimeout
 		}
-		log.Error().Err(err).Msg("Post")
+		trace.Printf("Post2, uri=%d error=%v", uri, err)
 		return nil, ErrInternel
 	}
 	return data, transToSDKError(statusCode)

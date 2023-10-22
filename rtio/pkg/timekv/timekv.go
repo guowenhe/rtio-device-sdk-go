@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog/log"
+	"github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/trace"
 )
 
 // base on sync.Map, could set concurrency
@@ -30,8 +30,8 @@ import (
 type Key uint16
 
 type Value struct {
-	internelID int // for unit test
-	C          chan []byte
+	// internelID int // for unit test
+	C chan []byte
 }
 
 type _Store struct {
@@ -52,7 +52,7 @@ func NewTimeKV(expire time.Duration) *TimeKV {
 func (s *TimeKV) DelExpireKeys() {
 	f := func(k, v interface{}) bool {
 		if time.Since(v.(*_Store).storeTime) > s.expire {
-			log.Warn().Interface("key", k).Msg("expired and deleted")
+			trace.Printf("DelExpireKeys, key=%v", v)
 			s.store.Delete(k)
 		}
 		return true

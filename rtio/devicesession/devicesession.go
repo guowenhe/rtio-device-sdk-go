@@ -26,13 +26,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	ru "github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/rtioutils"
-
-	"github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/timekv"
-
 	dp "github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/deviceproto"
-
-	"github.com/rs/zerolog/log"
+	ru "github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/rtioutils"
+	"github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/timekv"
+	"github.com/guowenhe/rtio-device-sdk-go/rtio/pkg/trace"
 )
 
 const (
@@ -72,41 +69,19 @@ type DeviceSession struct {
 func Connect(ctx context.Context, deviceID, deviceSecret, serverAddr string) (*DeviceSession, error) {
 	conn, err := net.DialTimeout("tcp", serverAddr, time.Second*60)
 	if err != nil {
-		log.Error().Err(err).Msg("connect server error")
+		trace.Noticef("error=%v", err)
 		return nil, err
 	}
 	session := newDeviceSession(conn, deviceID, deviceSecret, serverAddr)
 	return session, nil
 }
-
-func ConnectWithLocalAddr(ctx context.Context, deviceID, deviceSecret, localAddr, serverAddr string) (*DeviceSession, error) {
-	laddr, err := net.ResolveTCPAddr("tcp", localAddr)
-	if err != nil {
-		log.Error().Err(err).Msg("localAddr error")
-		return nil, err
-	}
-	dialer := net.Dialer{LocalAddr: laddr, Timeout: time.Second * 60}
-	conn, err := dialer.Dial("tcp", serverAddr)
-
-	if err != nil { // max try 2 times
-		log.Error().Str("deviceid", deviceID).Uint16("retrytimes", 1).Err(err).Msg("connect server error, reconnect after 3s")
-		time.Sleep(time.Second * 3)
-		conn, err = dialer.Dial("tcp", serverAddr)
-		if err != nil {
-			log.Error().Str("deviceid", deviceID).Uint16("retrytimes", 2).Err(err).Msg("connect server error, reconnect after 9s")
-			time.Sleep(time.Second * 9)
-			conn, err = dialer.Dial("tcp", serverAddr)
-			if err != nil {
-				log.Error().Str("deviceid", deviceID).Err(err).Msg("connect server error, do not retry again")
-				return nil, err
-			}
-		}
-	}
-
-	session := newDeviceSession(conn, deviceID, deviceSecret, serverAddr)
-	return session, nil
+func (s *DeviceSession) SetHeartbeatSeconds(n uint16) {
+	s.heartbeatSeconds = n
 }
-
+func (s *DeviceSession) Serve(ctx context.Context) {
+	go s.serve(ctx, s.errChan)
+	go s.recover(ctx, s.errChan)
+}
 func newDeviceSession(conn net.Conn, deviceId, deviceSecret, serverAddr string) *DeviceSession {
 	s := &DeviceSession{
 		deviceID:           deviceId,
@@ -125,10 +100,6 @@ func newDeviceSession(conn net.Conn, deviceId, deviceSecret, serverAddr string) 
 	s.rollingHeaderID.Store(0)
 
 	return s
-}
-func (s *DeviceSession) Serve(ctx context.Context) {
-	go s.serve(ctx, s.errChan)
-	go s.recover(ctx, s.errChan)
 }
 func (s *DeviceSession) genHeaderID() uint16 {
 	return uint16(s.rollingHeaderID.Add(1))
@@ -214,13 +185,13 @@ func (s *DeviceSession) reconnect(ctx context.Context, serverAddr string, errCha
 	s.reconnectTimes++
 	conn, err := net.DialTimeout("tcp", serverAddr, time.Second*60)
 	if err != nil {
-		log.Error().Str("deviceid", s.deviceID).Uint16("retrytimes", s.reconnectTimes).Err(err).Msg("Reconnect server error")
+		trace.Printf("reconnect, deviceid=%s, retrytimes=%d, error=%v", s.deviceID, s.reconnectTimes, err)
 		errChan <- err
 		return s.reconnectTimes
 	}
 	s.reconnectTimes = 0 // connect sucess and reset to 0
 	s.conn = conn
-	log.Info().Str("deviceid", s.deviceID).Uint16("retrytimes", s.reconnectTimes).Msg("Reconnect server success")
+	trace.Noticef("reconnect server success, deviceid=%s, retrytimes=%d", s.deviceID, s.reconnectTimes)
 	go s.serve(ctx, errChan)
 	return s.reconnectTimes
 }
@@ -232,10 +203,11 @@ func (s *DeviceSession) sendCoReq(headerID uint16, method dp.Method, uri uint32,
 		URI:      uri,
 		Data:     data,
 	}
-	log.Info().Uint16("headerid", headerID).Uint32("uri", uri).Msg("sendCoReq")
+
+	trace.Printf("sendCoReq, headerid=%d, uri=%d", headerID, uri)
 	buf := make([]byte, int(dp.HeaderLen+dp.HeaderLen_CoReq)+len(data))
 	if err := dp.EncodeCoReq_OverDeviceSendReq(req, buf); err != nil {
-		log.Error().Uint16("headerid", headerID).Err(err).Msg("sendCoReq")
+		trace.Printf("sendCoReq, headerid=%d, error=%v", headerID, err)
 		return nil, err
 	}
 	respChan := make(chan []byte, 1)
@@ -250,54 +222,49 @@ func (s *DeviceSession) receiveCoResp(headerID uint16, respChan <-chan []byte, t
 	select {
 	case sendRespBody, ok := <-respChan:
 		if !ok {
-			log.Error().Err(ErrSendRespChannClose).Msg("receiveCoResp")
+			trace.Printf("receiveCoResp, headerid=%d, error=%v", headerID, ErrSendRespChannClose)
 			return dp.StatusCode_Unknown, nil, ErrSendRespChannClose
 		}
 		coResp, err := dp.DecodeCoResp(headerID, sendRespBody)
 		if err != nil {
-			log.Error().Err(err).Msg("receiveCoResp")
+			trace.Printf("receiveCoResp, headerid=%d, error=%v", headerID, err)
 			return dp.StatusCode_Unknown, nil, err
 		}
 		if coResp.Method != dp.Method_ConstrainedGet && coResp.Method != dp.Method_ConstrainedPost {
-			log.Error().Err(ErrMethodNotMatch).Msg("receiveCoResp")
+			trace.Printf("receiveCoResp, headerid=%d, error=%v", headerID, ErrMethodNotMatch)
 			return dp.StatusCode_InternalServerError, nil, ErrMethodNotMatch
 		}
-		log.Info().Uint16("headerid", coResp.HeaderID).Str("status", coResp.Code.String()).Msg("receiveCoResp")
+		trace.Printf("receiveCoResp, headerid=%d, status=%s", coResp.HeaderID, coResp.Code.String())
 
 		return coResp.Code, coResp.Data, nil
 	case <-t.C:
-		log.Error().Err(ErrSendTimeout).Msg("receiveCoResp")
+		trace.Printf("receiveCoResp, error=%v", ErrSendTimeout)
 		return dp.StatusCode_Unknown, nil, ErrSendTimeout
 	}
 }
 
-func (s *DeviceSession) receiveCoResp2(ctx context.Context, headerID uint16, respChan <-chan []byte, timeout time.Duration) (dp.StatusCode, []byte, error) {
+func (s *DeviceSession) receiveCoRespWithContext(ctx context.Context, headerID uint16, respChan <-chan []byte) (dp.StatusCode, []byte, error) {
 	defer s.sendIDStore.Del(timekv.Key(headerID))
-	t := time.NewTimer(timeout)
-	defer t.Stop()
 	select {
 	case sendRespBody, ok := <-respChan:
 		if !ok {
-			log.Error().Err(ErrSendRespChannClose).Msg("receiveCoResp")
+			trace.Printf("receiveCoRespWithContext, headerid=%d, error=%v", headerID, ErrSendRespChannClose)
 			return dp.StatusCode_Unknown, nil, ErrSendRespChannClose
 		}
 		coResp, err := dp.DecodeCoResp(headerID, sendRespBody)
 		if err != nil {
-			log.Error().Err(err).Msg("receiveCoResp")
+			trace.Printf("receiveCoRespWithContext, headerid=%d, error=%v", headerID, err)
+
 			return dp.StatusCode_Unknown, nil, err
 		}
 		if coResp.Method != dp.Method_ConstrainedGet && coResp.Method != dp.Method_ConstrainedPost {
-			log.Error().Err(ErrMethodNotMatch).Msg("receiveCoResp")
+			trace.Printf("receiveCoRespWithContext, headerid=%d, error=%d", headerID, ErrMethodNotMatch)
 			return dp.StatusCode_InternalServerError, nil, ErrMethodNotMatch
 		}
-		log.Info().Uint16("headerid", coResp.HeaderID).Str("status", coResp.Code.String()).Msg("receiveCoResp")
-
+		trace.Printf("WithContext, headerid=%d, status=%s", coResp.HeaderID, coResp.Code.String())
 		return coResp.Code, coResp.Data, nil
-	case <-t.C:
-		log.Error().Err(ErrSendTimeout).Msg("receiveCoResp")
-		return dp.StatusCode_Unknown, nil, ErrSendTimeout
 	case <-ctx.Done():
-		log.Info().Msg("context done")
+		trace.Printf("WithContext context done")
 		return dp.StatusCode_Unknown, nil, ErrCanceled
 	}
 }
@@ -310,7 +277,8 @@ func (s *DeviceSession) sendObNotifyReq(obid uint16, headerID uint16, data []byt
 		Code:     dp.StatusCode_Continue,
 		Data:     data,
 	}
-	log.Info().Uint16("obid", obid).Uint16("headerid", headerID).Msg("sendObNotifyReq")
+	trace.Printf("sendObNotifyReq, headerid=%d, obid=%d", headerID, obid)
+
 	buf := make([]byte, int(dp.HeaderLen+dp.HeaderLen_ObGetNotifyReq)+len(data))
 	if err := dp.EncodeObGetNotifyReq_OverDeviceSendReq(req, buf); err != nil {
 		return nil, err
@@ -327,7 +295,8 @@ func (s *DeviceSession) sendObNotifyReqTerminate(obid uint16, headerID uint16) (
 		Method:   dp.Method_ObservedGet,
 		Code:     dp.StatusCode_Terminate,
 	}
-	log.Info().Uint16("obid", obid).Uint16("headerid", headerID).Msg("sendObNotifyReqTerminate")
+	trace.Printf("sendObNotifyReqTerminate, headerid=%d, obid=%d", headerID, obid)
+
 	buf := make([]byte, int(dp.HeaderLen+dp.HeaderLen_ObGetNotifyReq))
 	if err := dp.EncodeObGetNotifyReq_OverDeviceSendReq(req, buf); err != nil {
 		return nil, err
@@ -344,32 +313,34 @@ func (s *DeviceSession) receiveObNotifyResp(obID, headerID uint16, respChan <-ch
 	select {
 	case sendRespBody, ok := <-respChan:
 		if !ok {
-			log.Error().Uint16("obid", obID).Err(ErrSendRespChannClose).Msg("receiveObNotifyResp")
+			trace.Printf("receiveObNotifyResp, headerid=%d, error=%d", headerID, ErrSendRespChannClose)
 			return dp.StatusCode_Unknown, ErrSendRespChannClose
 		}
 		obEstabResp, err := dp.DecodeObGetNotifyResp(headerID, sendRespBody)
 		if err != nil {
-			log.Error().Uint16("obid", obID).Err(err).Msg("receiveObNotifyResp")
+			trace.Printf("receiveObNotifyResp, headerid=%d, obid=%d, error=%v", headerID, obID, err)
 			return dp.StatusCode_Unknown, err
 		}
 		if obEstabResp.ObID != obID {
-			log.Error().Uint16("obid", obID).Uint16("resp.obid", obEstabResp.ObID).Err(ErrObservaNotMatch).Msg("receiveObNotifyResp")
+			trace.Printf("receiveObNotifyResp, headerid=%d, obid=%d, error=%v", headerID, obID, ErrObservaNotMatch)
 			return dp.StatusCode_Unknown, ErrObservaNotMatch
 		}
 		if obEstabResp.Method != dp.Method_ObservedGet {
-			log.Error().Uint16("obid", obID).Err(dp.StatusCode_MethodNotAllowed).Msg("receiveObNotifyResp")
+			trace.Printf("receiveObNotifyResp, headerid=%d, obid=%d, error=%v", headerID, obID, dp.StatusCode_MethodNotAllowed)
 			return dp.StatusCode_MethodNotAllowed, nil
 		}
 		return obEstabResp.Code, nil
 	case <-t.C:
-		log.Error().Uint16("obid", obID).Err(ErrSendTimeout).Msg("receiveObNotifyResp")
+		trace.Printf("receiveObNotifyResp, headerid=%d, obid=%d, error=%v", headerID, obID, ErrSendTimeout)
 		return dp.StatusCode_Unknown, ErrSendTimeout
 	}
 }
-func (s *DeviceSession) observe(obid uint16, cancal context.CancelFunc, notifyReqChan <-chan []byte) {
-	log.Info().Uint16("obid", obid).Msg("observe")
+func (s *DeviceSession) observe(obID uint16, cancal context.CancelFunc, notifyReqChan <-chan []byte) {
+
+	trace.Printf("observe, obid=%d", obID)
+
 	defer func() {
-		log.Info().Uint16("obid", obid).Msg("observe exit")
+		trace.Printf("observe exit, obid=%d", obID)
 	}()
 	defer cancal()
 
@@ -377,30 +348,30 @@ func (s *DeviceSession) observe(obid uint16, cancal context.CancelFunc, notifyRe
 		data, ok := <-notifyReqChan
 		headerID := s.genHeaderID()
 		if ok {
-			notfyRespChan, err := s.sendObNotifyReq(obid, headerID, data)
+			notfyRespChan, err := s.sendObNotifyReq(obID, headerID, data)
 			if err != nil {
-				log.Error().Uint16("obid", obid).Err(err).Msg("sendObNotifyReq error")
+				trace.Printf("observe, obid=%d, error=%v", obID, err)
 				return
 			}
-			statusCode, err := s.receiveObNotifyResp(obid, headerID, notfyRespChan, time.Second*20)
+			statusCode, err := s.receiveObNotifyResp(obID, headerID, notfyRespChan, time.Second*20)
 			if err != nil {
-				log.Error().Uint16("obid", obid).Err(err).Msg("receiveObNotifyResp error")
+				trace.Printf("observe, obid=%d, error=%v", obID, err)
 				return
 			}
 			if dp.StatusCode_Continue != statusCode {
-				log.Debug().Uint16("obid", obid).Str("status", statusCode.String()).Msg("observe terminiate")
+				trace.Printf("observe terminiate, obid=%d", obID)
 				return
 			}
 		} else {
-			log.Debug().Uint16("obid", obid).Msg("observe, notify req channel closed")
-			notfyRespChan, err := s.sendObNotifyReqTerminate(obid, headerID)
+			trace.Printf("observe notify req channel closed, obid=%d", obID)
+			notfyRespChan, err := s.sendObNotifyReqTerminate(obID, headerID)
 			if err != nil {
-				log.Error().Uint16("obid", obid).Err(err).Msg("sendObNotifyReqTerminate error")
+				trace.Printf("observe, obid=%d, error=%v", obID, err)
 				return
 			}
-			_, err = s.receiveObNotifyResp(obid, headerID, notfyRespChan, time.Second*20)
+			_, err = s.receiveObNotifyResp(obID, headerID, notfyRespChan, time.Second*20)
 			if err != nil {
-				log.Error().Uint16("obid", obid).Err(err).Msg("receiveObNotifyResp error")
+				trace.Printf("observe, obid=%d, error=%v", obID, err)
 				return
 			}
 			return
@@ -411,7 +382,7 @@ func (s *DeviceSession) observe(obid uint16, cancal context.CancelFunc, notifyRe
 func (s *DeviceSession) obGetReqHandler(header *dp.Header, reqBuf []byte) error {
 	req, err := dp.DecodeObGetEstabReq(header.ID, reqBuf)
 	if err != nil {
-		log.Error().Uint16("obid", req.ObID).Err(err).Msg("obGetReqHandler")
+		trace.Printf("obGetReqHandler, obid=%d, error=%v", req.ObID, err)
 		return err
 	}
 
@@ -423,10 +394,10 @@ func (s *DeviceSession) obGetReqHandler(header *dp.Header, reqBuf []byte) error 
 	handler, ok := s.regObGetHandlerMap[req.URI]
 	respBuf := make([]byte, dp.HeaderLen+dp.HeaderLen_ObGetEstabResp)
 	if !ok {
-		log.Warn().Uint16("obid", req.ObID).Uint32("uri", req.URI).Msg("obGetReqHandler, uri not found")
+		trace.Printf("obGetReqHandler uri not found, obid=%d, uri=%d", req.ObID, req.URI)
 		resp.Code = dp.StatusCode_NotFount
 		if err := dp.EncodeObGetEstabResp_OverServerSendResp(resp, respBuf); err != nil {
-			log.Error().Uint16("obid", req.ObID).Err(err).Msg("obGetReqHandler")
+			trace.Printf("obGetReqHandler, obid=%d, error=%v", req.ObID, err)
 			return err
 		}
 	} else {
@@ -439,7 +410,7 @@ func (s *DeviceSession) obGetReqHandler(header *dp.Header, reqBuf []byte) error 
 		}
 		resp.Code = dp.StatusCode_Continue
 		if err := dp.EncodeObGetEstabResp_OverServerSendResp(resp, respBuf); err != nil {
-			log.Error().Uint16("obid", req.ObID).Err(err).Msg("obGetReqHandler")
+			trace.Printf("obGetReqHandler, obid=%d, error=%v", req.ObID, err)
 			cancle()
 			return err
 		}
@@ -452,7 +423,7 @@ func (s *DeviceSession) obGetReqHandler(header *dp.Header, reqBuf []byte) error 
 func (s *DeviceSession) coGetReqHandler(header *dp.Header, reqBuf []byte) error {
 	req, err := dp.DecodeCoReq(header.ID, reqBuf)
 	if err != nil {
-		log.Error().Err(err).Msg("coGetReqHandler")
+		trace.Printf("coGetReqHandler, headerid=%d, error=%v", req.HeaderID, err)
 		return err
 	}
 	resp := &dp.CoResp{
@@ -462,11 +433,11 @@ func (s *DeviceSession) coGetReqHandler(header *dp.Header, reqBuf []byte) error 
 	handler, ok := s.regGetHandlerMap[req.URI]
 
 	if !ok {
-		log.Warn().Uint16("headerid", req.HeaderID).Uint32("uri", req.URI).Msg("coGetReqHandler, uri not found")
+		trace.Printf("coGetReqHandler uri not found, headerid=%d, uri=%d", req.HeaderID, req.URI)
 		resp.Code = dp.StatusCode_NotFount
 		buf := make([]byte, int(dp.HeaderLen+dp.HeaderLen_CoResp))
 		if err := dp.EncodeCoResp_OverServerSendResp(resp, buf); err != nil {
-			log.Error().Uint16("headerid", req.HeaderID).Err(err).Msg("coGetReqHandler")
+			trace.Printf("coGetReqHandler, headerid=%d, error=%v", req.HeaderID, err)
 			return err
 		}
 		s.outgoingChan <- buf
@@ -480,7 +451,7 @@ func (s *DeviceSession) coGetReqHandler(header *dp.Header, reqBuf []byte) error 
 		resp.Data = data
 		buf := make([]byte, int(dp.HeaderLen+dp.HeaderLen_CoResp)+len(resp.Data))
 		if err := dp.EncodeCoResp_OverServerSendResp(resp, buf); err != nil {
-			log.Error().Uint16("headerid", req.HeaderID).Err(err).Msg("coGetReqHandler")
+			trace.Printf("coGetReqHandler, headerid=%d, error=%v", req.HeaderID, err)
 			return err
 		}
 		s.outgoingChan <- buf
@@ -491,7 +462,7 @@ func (s *DeviceSession) coGetReqHandler(header *dp.Header, reqBuf []byte) error 
 func (s *DeviceSession) coPostReqHandler(header *dp.Header, reqBuf []byte) error {
 	req, err := dp.DecodeCoReq(header.ID, reqBuf)
 	if err != nil {
-		log.Error().Err(err).Msg("coPostReqHandler")
+		trace.Printf("coPostReqHandler, headerid=%d, error=%v", req.HeaderID, err)
 		return err
 	}
 	resp := &dp.CoResp{
@@ -501,11 +472,11 @@ func (s *DeviceSession) coPostReqHandler(header *dp.Header, reqBuf []byte) error
 	handler, ok := s.regPostHandlerMap[req.URI]
 
 	if !ok {
-		log.Warn().Uint16("headerid", req.HeaderID).Uint32("uri", req.URI).Msg("coGetReqHandler, uri not found")
+		trace.Printf("coPostReqHandler uri not found, headerid=%d, uri=%d", req.HeaderID, req.URI)
 		resp.Code = dp.StatusCode_NotFount
 		buf := make([]byte, int(dp.HeaderLen+dp.HeaderLen_CoResp))
 		if err := dp.EncodeCoResp_OverServerSendResp(resp, buf); err != nil {
-			log.Error().Uint16("headerid", req.HeaderID).Err(err).Msg("coGetReqHandler")
+			trace.Printf("coPostReqHandler, headerid=%d, error=%v", req.HeaderID, err)
 			return err
 		}
 		s.outgoingChan <- buf
@@ -519,7 +490,7 @@ func (s *DeviceSession) coPostReqHandler(header *dp.Header, reqBuf []byte) error
 		resp.Data = data
 		buf := make([]byte, int(dp.HeaderLen+dp.HeaderLen_CoResp)+len(resp.Data))
 		if err := dp.EncodeCoResp_OverServerSendResp(resp, buf); err != nil {
-			log.Error().Uint16("headerid", req.HeaderID).Err(err).Msg("coGetReqHandler")
+			trace.Printf("coPostReqHandler, headerid=%d, error=%v", req.HeaderID, err)
 			return err
 		}
 		s.outgoingChan <- buf
@@ -532,13 +503,13 @@ func (s *DeviceSession) serverSendRequest(header *dp.Header) error {
 	bodyBuf := make([]byte, header.BodyLen)
 	readLen, err := io.ReadFull(s.conn, bodyBuf)
 	if err != nil {
-		log.Error().Int("readLen", readLen).Err(err).Msg("serverSendRequest, ReadFull")
+		trace.Printf("serverSendRequest, readLen=%d, error=%v", readLen, err)
 		return err
 	}
 
 	method, err := dp.DecodeMethod(bodyBuf)
 	if err != nil {
-		log.Error().Err(err).Msg("serverSendRequest")
+		trace.Printf("serverSendRequest, error=%v", err)
 		return err
 	}
 
@@ -546,19 +517,19 @@ func (s *DeviceSession) serverSendRequest(header *dp.Header) error {
 	case dp.Method_ObservedGet:
 		err := s.obGetReqHandler(header, bodyBuf)
 		if err != nil {
-			log.Error().Err(err).Msg("serverSendRequest")
+			trace.Printf("serverSendRequest, error=%v", err)
 			return err
 		}
 	case dp.Method_ConstrainedGet:
 		err := s.coGetReqHandler(header, bodyBuf)
 		if err != nil {
-			log.Error().Err(err).Msg("serverSendRequest")
+			trace.Printf("serverSendRequest, error=%v", err)
 			return err
 		}
 	case dp.Method_ConstrainedPost:
 		err := s.coPostReqHandler(header, bodyBuf)
 		if err != nil {
-			log.Error().Err(err).Msg("serverSendRequest")
+			trace.Printf("serverSendRequest, error=%v", err)
 			return err
 		}
 	}
@@ -569,19 +540,19 @@ func (s *DeviceSession) deviceSendRespone(header *dp.Header) error {
 	value, ok := s.sendIDStore.Get(timekv.Key(header.ID))
 
 	if !ok {
-		log.Warn().Uint16("headerid", header.ID).Msg("deviceSendRespone")
+		trace.Printf("deviceSendRespone, headerid=%d", header.ID)
 		return ErrHeaderIDNotExist
 	}
 	bodyBuf := make([]byte, header.BodyLen)
 	readLen, err := io.ReadFull(s.conn, bodyBuf)
 	if err != nil {
-		log.Error().Int("readLen", readLen).Err(err).Msg("deviceSendRespone, ReadFull")
+		trace.Printf("deviceSendRespone, readLen=%d, error=%v", readLen, err)
 		return err
 	}
 
 	sendResp, err := dp.DecodeSendRespBody(header, bodyBuf)
 	if err != nil {
-		log.Error().Err(err).Msg("deviceSendRespone")
+		trace.Printf("deviceSendRespone, error=%v", err)
 		return err
 	}
 	value.C <- sendResp.Body
@@ -590,19 +561,18 @@ func (s *DeviceSession) deviceSendRespone(header *dp.Header) error {
 
 func (s *DeviceSession) tcpIncomming(ctx context.Context, errChan chan<- error) {
 	defer func() {
-		log.Debug().Msg("tcpIncomming exit")
+		trace.Printf("tcpIncomming exit")
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debug().Msg("tcpIncomming context done")
+			trace.Printf("tcpIncomming context done")
 			return
 		default:
-
 			headerBuf := make([]byte, dp.HeaderLen)
 			readLen, err := io.ReadFull(s.conn, headerBuf)
-			log.Debug().Int("readlen", readLen).Msg("tcpIncomming, read header")
+			trace.Printf("tcpIncomming read header, readLen=%d", readLen)
 			if err != nil {
 				errChan <- err
 				return
@@ -612,28 +582,28 @@ func (s *DeviceSession) tcpIncomming(ctx context.Context, errChan chan<- error) 
 				errChan <- dp.ErrDecode
 				return
 			}
-			log.Debug().Uint16("headerid", header.ID).Str("type", header.Type.String()).Msg("tcpIncomming")
+			trace.Printf("tcpIncomming, headerid=%d, type=%s", header.ID, header.Type.String())
 			switch header.Type {
 			case dp.MsgType_DeviceAuthResp:
 				if header.Code == dp.Code_Success {
-					log.Info().Msg("auth pass")
+					trace.Printf("tcpIncomming auth pass")
 				} else {
-					log.Error().Uint8("resp.code", uint8(header.Code)).Msg("auth fail")
+					trace.Printf("tcpIncomming auth fail, resp.code=%d", header.Code)
 					errChan <- ErrAuthFailed
 					return
 				}
 			case dp.MsgType_DevicePingResp:
 				if header.Code == dp.Code_Success {
-					log.Info().Msg("ping success")
+					trace.Printf("tcpIncomming ping success")
 				} else {
-					log.Error().Uint8("resp.code", uint8(header.Code)).Msg("ping fail")
+					trace.Printf("tcpIncomming ping fail, resp.code=%d", header.Code)
 					errChan <- ErrPingFailed
 					return
 				}
 			case dp.MsgType_ServerSendReq:
 				err := s.serverSendRequest(header)
 				if err != nil {
-					log.Error().Err(err).Msg("tcpIncomming")
+					trace.Printf("tcpIncomming, error=%v", err)
 					errChan <- err
 					return
 				}
@@ -653,18 +623,18 @@ func (s *DeviceSession) tcpIncomming(ctx context.Context, errChan chan<- error) 
 
 func (s *DeviceSession) tcpOutgoing(ctx context.Context, heartbeat *time.Ticker, errChan chan<- error) {
 	defer func() {
-		log.Debug().Msg("tcpOutgoing exit")
+		trace.Printf("tcpOutgoing exit")
 	}()
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debug().Msg("tcpOutgoing context done")
+			trace.Printf("tcpOutgoing context done")
 			return
 		case buf := <-s.outgoingChan:
 			heartbeat.Reset(time.Second * time.Duration(s.heartbeatSeconds))
-			if n, err := ru.WriteFull(s.conn, buf); err != nil {
-				log.Error().Err(err).Int("writelen", n).Int("buflen", len(buf)).Msg("tcpOutgoing WriteFull error")
+			if writelen, err := ru.WriteFull(s.conn, buf); err != nil {
+				trace.Printf("tcpIncomming WriteFull error, writelen=%d buflen=%d, error=%v", writelen, len(buf), err)
 				errChan <- err
 				return
 			}
@@ -673,11 +643,10 @@ func (s *DeviceSession) tcpOutgoing(ctx context.Context, heartbeat *time.Ticker,
 }
 
 func (s *DeviceSession) serve(ctx context.Context, errChan chan<- error) {
+	trace.Printf("serve, deviceip=%s deviceid=%s", s.conn.LocalAddr().String(), s.deviceID)
 
-	devicelogger := log.With().Str("device_ip", s.conn.LocalAddr().String()).Logger()
-	devicelogger.Info().Str("deviceid", s.deviceID).Msg("serving")
 	defer func() {
-		devicelogger.Info().Msg("stop serving")
+		trace.Printf("serve stop, deviceip=%s", s.conn.LocalAddr().String())
 	}()
 
 	ioCtx, ioCancel := context.WithCancel(ctx)
@@ -691,12 +660,10 @@ func (s *DeviceSession) serve(ctx context.Context, errChan chan<- error) {
 	go s.tcpOutgoing(ioCtx, heartbeat, errNetChan)
 
 	if err := s.auth(); err != nil {
-		log.Error().Err(err).Msg("send auth error")
+		trace.Printf("serve stop, deviceip=%s, error=%v", s.conn.LocalAddr().String(), err)
 		return
 	}
 
-	// device define heartbeat's timeout
-	s.heartbeatSeconds = 60
 	if s.heartbeatSeconds != DEVICE_HEARTBEAT_SECONDS_DEFAULT {
 		s.pingRemoteSet(s.heartbeatSeconds)
 	}
@@ -708,23 +675,22 @@ func (s *DeviceSession) serve(ctx context.Context, errChan chan<- error) {
 		select {
 		case err := <-errNetChan:
 			errChan <- err
-			log.Error().Err(err).Msg("device done when error")
+			trace.Noticef("serve, device done when error, deviceip=%s, error=%v", s.conn.LocalAddr().String(), err)
 			s.conn.Close()
 			ioCancel()
 			return
 		case <-ioCtx.Done():
-			log.Debug().Msg("device done when deviceCtx done")
+			trace.Printf("serve, device done when context done, deviceip=%s", s.conn.LocalAddr().String())
 			s.conn.Close()
 			// if err := s.conn.Close(); err != nil {
-			// 	log.Warn().Err(err).Msg("device close conn error")
+			// trace.Printf("serve, error when close conn, deviceip=%s", s.conn.LocalAddr().String())
 			// }
 			return
 		case <-heartbeat.C:
-			devicelogger.Debug().Msgf("ping req")
+			trace.Printf("serve, ping req, deviceip=%s", s.conn.LocalAddr().String())
 			s.ping()
-
 		case <-storeTicker.C:
-			// servelogger.Debug().Msgf("storeTicker.C %s", time.Now().String())
+			// trace.Printf("serve, deviceip=%s, tick=%s", s.conn.LocalAddr().String(), time.Now().String())
 			s.sendIDStore.DelExpireKeys()
 		}
 	}
@@ -734,14 +700,13 @@ func (s *DeviceSession) recover(ctx context.Context, errChan chan error) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Info().Msg("recover ctx done")
+			trace.Printf("recover ctx done")
 			return
 		case err := <-errChan:
-			log.Error().Err(err).Msg("recover, reconnect later ")
+			trace.Noticef("recover, reconnect later, error=%v", err)
 			time.AfterFunc(time.Second*s.getReconnectInterval(6), func() {
 				s.reconnect(ctx, s.serverAddr, errChan)
 			})
 		}
-
 	}
 }
