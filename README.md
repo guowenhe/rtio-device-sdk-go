@@ -1,6 +1,6 @@
 # RTIO-DEVICE-SDK-GO
 
-RTIO-DEVICE-SDK-GO 是设备端对接RTIO服务得Golang SDK，帮助开发者快速对接RTIO服务。
+RTIO-DEVICE-SDK-GO是设备端对接RTIO服务的Golang SDK，帮助开发者快速对接RTIO服务，同时实现设备端功能。
 
 ## 开始使用
 
@@ -55,7 +55,7 @@ func main() {
 }
 ```
 
-其中, 设备端URI "/greeter"对应的CRC为0xe5dcc140，可通过下面命令计算：
+其中, 设备端URI `/greeter`对应的CRC为`0xe5dcc140`，可通过下面命令计算：
 
 ```sh
 $ rtio-urihash -u "/greeter" -x
