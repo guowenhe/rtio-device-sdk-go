@@ -55,6 +55,25 @@ func main() {
 }
 ```
 
+其中, 设备端URI "/greeter"对应的CRC为0xe5dcc140，可通过下面命令计算：
+
+```sh
+$ rtio-urihash -u "/greeter" -x
+URI: /greeter, CRC: 0xe5dcc140
+```
+
+`rtio-urihash`命令安装：
+
+```sh
+go get github.com/guowenhe/rtio-urihash
+go install github.com/guowenhe/rtio-urihash
+$ rtio-urihash -h
+Usage of rtio-urihash:
+  -u string
+        uri string, example: /uri/example
+  -x    display digest with hex
+```
+
 ## 运行
 
 确定本地RTIO服务已经启动，运行下面命令，以链接到RTIO服务：
