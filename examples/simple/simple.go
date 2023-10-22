@@ -15,7 +15,6 @@
 * limitations under the License.
 *
  */
-
 package main
 
 import (
@@ -28,16 +27,16 @@ import (
 
 func main() {
 	serverAddr := "localhost:17017"
-	deviceID := "cfa09baa-4913-4ad7-a936-3e26f9671b09"
-	deviceSecret := "mb6bgso4EChvyzA05thF9+wH"
+	deviceID := "cfa09baa-4913-4ad7-a936-3e26f9671b10"
+	deviceSecret := "mb6bgso4EChvyzA05thF9+He"
 	session, err := devicesession.Connect(context.Background(), deviceID, deviceSecret, serverAddr)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-
-	session.RegisterPostHandler(0xb70a47db, func(req []byte) ([]byte, error) {
-		log.Printf("%s", string(req))
+	// URI: /greeter, CRC: 0xe5dcc140
+	session.RegisterPostHandler(0xe5dcc140, func(req []byte) ([]byte, error) {
+		log.Printf("received [%s] and reply [world]", string(req))
 		return []byte("world"), nil
 
 	})
@@ -45,5 +44,4 @@ func main() {
 
 	// do other things
 	time.Sleep(time.Minute * 30)
-
 }
