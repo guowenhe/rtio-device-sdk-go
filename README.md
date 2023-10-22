@@ -91,6 +91,8 @@ $ echo -n "hello" | base64
 aGVsbG8=
 ```
 
+通过curl发送Http请求：
+
 ```sh
 $ curl -X POST http://127.0.0.1:17317/cfa09baa-4913-4ad7-a936-3e26f9671b10/post_handler -d '{"uri":"/greeter","id
 ":12667,"data":"aGVsbG8="}'
