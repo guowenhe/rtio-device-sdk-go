@@ -9,8 +9,8 @@ RTIO-DEVICE-SDK-GO为Golang版SDK，用于连接RTIO服务，帮助设备端注�
 ### 创建项目
 
 ```sh
-mkdir ~/hello-rtio
-cd ~/hello-rtio
+mkdir ./hello-rtio
+cd ./hello-rtio
 go mod init hello-rtio
 ```
 
@@ -96,8 +96,7 @@ aGVsbG8=
 通过curl发送Http请求：
 
 ```sh
-$ curl -X POST http://127.0.0.1:17317/cfa09baa-4913-4ad7-a936-3e26f9671b10/post_handler -d '{"uri":"/greeter","id
-":12667,"data":"aGVsbG8="}'
+$ curl -X POST http://127.0.0.1:17317/cfa09baa-4913-4ad7-a936-3e26f9671b10/post_handler -d '{"uri":"/greeter","id":12667,"data":"aGVsbG8="}'
 {"id":12667, "code":"CODE_OK", "data":"d29ybGQ="}
 ```
 
