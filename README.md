@@ -1,6 +1,8 @@
 # RTIO-DEVICE-SDK-GO
 
-RTIO-DEVICE-SDK-GO是设备端对接RTIO服务的Golang SDK，帮助开发者快速对接RTIO服务，同时实现设备端功能。
+设备也是服务资源的提供者，RTIO采取REST-Like模型，使设备端开发具有和WEB服务开发相似的体验和高效。
+
+RTIO-DEVICE-SDK-GO为Golang版SDK，用于连接RTIO服务，帮助设备端注册Handler（处理来自外部请求），并提供发送请求到RTIO代理的后端服务的方法。
 
 ## 开始使用
 
@@ -76,7 +78,7 @@ Usage of rtio-urihash:
 
 ## 运行
 
-确定本地RTIO服务已经启动，运行下面命令，以链接到RTIO服务：
+确定本地RTIO服务已经启动，可参考[RTIO编译和运行](https://github.com/guowenhe/rtio#%E7%BC%96%E8%AF%91%E5%92%8C%E8%BF%90%E8%A1%8C)。运行下面命令，以链接到RTIO服务：
 
 ```sh
 go run main.go
