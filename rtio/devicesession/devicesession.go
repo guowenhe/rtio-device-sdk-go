@@ -41,7 +41,7 @@ var (
 	ErrOverCapacity       = errors.New("ErrOverCapacity")
 	ErrSendTimeout        = errors.New("ErrSendTimeout")
 	ErrCanceled           = errors.New("ErrCanceled")
-	ErrAuthFailed         = errors.New("ErrAuthFailed")
+	ErrVerifyFailed       = errors.New("ErrVerifyFailed")
 	ErrPingFailed         = errors.New("ErrPingFailed")
 	ErrTransFunc          = errors.New("ErrTransFunc")
 	ErrObservaNotMatch    = errors.New("ErrObservaNotMatch")
@@ -105,15 +105,15 @@ func (s *DeviceSession) genHeaderID() uint16 {
 	return uint16(s.rollingHeaderID.Add(1))
 }
 
-func (s *DeviceSession) auth() error {
+func (s *DeviceSession) verify() error {
 	headerID, err := ru.GenUint16ID()
 	if err != nil {
 		return err
 	}
-	req := &dp.AuthReq{
+	req := &dp.VerifydReq{
 		Header: &dp.Header{
 			Version: dp.Version,
-			Type:    dp.MsgType_DeviceAuthReq,
+			Type:    dp.MsgType_DeviceVerifyReq,
 			ID:      headerID,
 		},
 		CapLevel:     1,
@@ -121,7 +121,7 @@ func (s *DeviceSession) auth() error {
 		DeviceSecret: s.deviceSecret,
 	}
 
-	buf, err := dp.EncodeAuthReq(req)
+	buf, err := dp.EncodeVerifyReq(req)
 	if err != nil {
 		return err
 	}
@@ -584,12 +584,12 @@ func (s *DeviceSession) tcpIncomming(ctx context.Context, errChan chan<- error) 
 			}
 			trace.Printf("tcpIncomming, headerid=%d, type=%s", header.ID, header.Type.String())
 			switch header.Type {
-			case dp.MsgType_DeviceAuthResp:
+			case dp.MsgType_DeviceVerifyResp:
 				if header.Code == dp.Code_Success {
-					trace.Printf("tcpIncomming auth pass")
+					trace.Printf("tcpIncomming verify pass")
 				} else {
-					trace.Printf("tcpIncomming auth fail, resp.code=%d", header.Code)
-					errChan <- ErrAuthFailed
+					trace.Printf("tcpIncomming verify fail, resp.code=%d", header.Code)
+					errChan <- ErrVerifyFailed
 					return
 				}
 			case dp.MsgType_DevicePingResp:
@@ -659,7 +659,7 @@ func (s *DeviceSession) serve(ctx context.Context, errChan chan<- error) {
 	go s.tcpIncomming(ioCtx, errNetChan)
 	go s.tcpOutgoing(ioCtx, heartbeat, errNetChan)
 
-	if err := s.auth(); err != nil {
+	if err := s.verify(); err != nil {
 		trace.Printf("serve stop, deviceip=%s, error=%v", s.conn.LocalAddr().String(), err)
 		return
 	}
